@@ -88,6 +88,9 @@ class Tokenizer {
     gpt4o_ = pre == "inkling2";
     ignore_merges_ = gpt4o_;
     if (gpt4o_) bos = -1;
+    // LFM2 (llama.cpp: pre "lfm2" = the LLAMA3 split, numbers in runs of up to 3 digits, ignore_merges)
+    num3_ = pre == "lfm2";
+    if (num3_) ignore_merges_ = true;
     static const std::vector<std::string> none;
     auto m = f.get_strs("tokenizer.ggml.merges");
     init(m ? *m : none);
@@ -223,7 +226,7 @@ class Tokenizer {
   }
 
  private:
-  bool spm_ = false, gpt2_ = false, ds3_ = false, gpt4o_ = false, ignore_merges_ = false;
+  bool spm_ = false, gpt2_ = false, ds3_ = false, gpt4o_ = false, ignore_merges_ = false, num3_ = false;
 
   // GPT-4o's pre-tokenizer (Inkling 2), as llama.cpp runs it (LLAMA_VOCAB_PRE_TYPE_GPT4O: no custom splitter, std::regex
   // on its "collapsed" text, src/unicode.cpp), the regex
@@ -486,7 +489,7 @@ class Tokenizer {
   // Qwen3.5 pre-tokenizer, equivalent to the regex
   //   (?:'[sS]|'[tT]|'[rR][eE]|'[vV][eE]|'[mM]|'[lL][lL]|'[dD])|[^\r\n\p{L}\p{N}]?[\p{L}\p{M}]+|\p{N}|
   //    ?[^\s\p{L}\p{M}\p{N}]+[\r\n]*|\s*[\r\n]+|\s+(?!\S)|\s+
-  static void pretokenize(const std::vector<uint32_t>& c, std::vector<std::pair<size_t, size_t>>& words) {
+  static void pretokenize(const std::vector<uint32_t>& c, std::vector<std::pair<size_t, size_t>>& words, int nd = 1) {
     const size_t n = c.size();
     auto F = [&](size_t i) -> uint16_t { return i < n ? uni::flags(c[i]) : 0; };
     auto LM = [&](size_t i) { return i < n && (F(i) & (uni::LETTER | uni::MARK)); };
@@ -517,7 +520,10 @@ class Tokenizer {
         }
       }
       // 3. one number
-      if (!e && N_(i)) e = i + 1;
+      if (!e && N_(i)) {
+        e = i + 1;
+        while ((int)(e - i) < nd && N_(e)) ++e;  // (LLAMA3: \p{N}{1,3})
+      }
       // 4. optional space + punctuation run + trailing newlines
       if (!e) {
         size_t j = 0;
@@ -659,7 +665,7 @@ class Tokenizer {
     if (gpt2_) pretokenize_gpt2(cps, words);
     else if (ds3_) pretokenize_ds3(cps, words);
     else if (gpt4o_) pretokenize_gpt4o(cps, words);
-    else pretokenize(cps, words);
+    else pretokenize(cps, words, num3_ ? 3 : 1);
     for (auto& [a, b] : words) bpe_word(text.substr(offs[a], offs[b] - offs[a]), out);
   }
 };

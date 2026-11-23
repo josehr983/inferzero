@@ -55,6 +55,11 @@ struct Hparams {
                        // output gate, 128-dim heads with RoPE over all dims, SwiGLU FFN
   bool ds41 = false;  // DeepSeek-V4.1-Flash (deepseek41): zero/engine_ds41.h
   bool inkling = false;  // Inkling 2 (inkling2 / inkling2_loop): zero/engine_inkling.h
+  // LFM2 MoE (lfm2moe, zero/engine_lfm.h; with qwen3): short-convolution layers where kv_heads[il] is 0, dense FFNs
+  // in the first lfm_dense layers, experts after them
+  bool lfm = false;
+  int lfm_dense = 0;
+  float lfm_wscale = 0.0f;
   bool swa_rings = false;  // sliding-window layers in ring caches (Gemma 4): no recurrent state, a cached
                           // prefix is reused by rewind() while the rings still hold it, per-layer KV geometry (kv_layers)
   int n_layer = 0, n_embd = 0, n_ff = 0, n_head = 0, n_head_kv = 0, head_dim = 0, n_rot = 0, n_vocab = 0;
@@ -87,7 +92,7 @@ struct Hparams {
   bool qsa_off = false;
   int hce() const { return hc_n * n_embd; }  // residual floats per token
   int conv_dim() const { return 2 * ssm_nk * ssm_d_state + ssm_d_inner; }
-  bool recurrent(int il) const { return !gemma && (il + 1) % full_attn_interval != 0; }
+  bool recurrent(int il) const { return lfm ? kv_heads[il] == 0 : !gemma && (il + 1) % full_attn_interval != 0; }
 };
 
 struct EngineOptions {
@@ -442,7 +447,7 @@ __kernel void rd_strip(__global const uint* p, __global uint* out, int per_item)
     const bool fn_4k = o.tp_size > 1 || zrt::D().global_mem >= (zrt::integrated() ? (15ull << 30) : (20ull << 30));
     // (the user, 2026-11-20: "Yes, 4096 for all", then "gemma4 2048 then": a MoE model with every expert on the GPU
     //  (the 35B-A3B on a B60 / B70) 2048 -> 4096 too, Gemma 4 2048 either way)
-    max_chunk = o.chunk > 0 ? o.chunk : hp.ds41 ? 1024 : hp.inkling ? ink_chunk_default() : stream_ ? (hp.gemma ? 2048 : hp.hc ? (fn_4k ? 4096 : 2048) : 4096) : hp.moe ? (hp.gemma ? 2048 : 4096) : tight_ ? (small_plan_ ? small_chunk_ : 1024) : (w8_resident && !res_long ? 512 : 4096);
+    max_chunk = o.chunk > 0 ? o.chunk : hp.lfm ? 2048 : hp.ds41 ? 1024 : hp.inkling ? ink_chunk_default() : stream_ ? (hp.gemma ? 2048 : hp.hc ? (fn_4k ? 4096 : 2048) : 4096) : hp.moe ? (hp.gemma ? 2048 : 4096) : tight_ ? (small_plan_ ? small_chunk_ : 1024) : (w8_resident && !res_long ? 512 : 4096);
     max_chunk = (std::max(max_chunk, o.min_chunk) + 127) / 128 * 128;
     q2_init();
     // (also in a dry run, --ctx auto's memory plan: H8's buffers and the float copy in aq_ are counted then; self audit
@@ -666,7 +671,7 @@ __kernel void rd_strip(__global const uint* p, __global uint* out, int per_item)
     for (auto& L : layers_)
       if (hp.recurrent(L.il)) {
         fill(L.conv_state, conv_bytes());
-        fill(L.S, (size_t)hp.ssm_nv * hp.ssm_d_state * hp.ssm_d_state * 4);
+        fill(L.S, state_bytes());
       }
     clFinish(cl_.queue);
   }
@@ -1082,7 +1087,7 @@ __kernel void rd_strip(__global const uint* p, __global uint* out, int per_item)
       s.pos = pos;
       return;
     }
-    const size_t sb = (size_t)hp.ssm_nv * hp.ssm_d_state * hp.ssm_d_state * 4, cb = conv_bytes();
+    const size_t sb = state_bytes(), cb = conv_bytes();
     if (s.S.empty())
       for (auto& L : layers_)
         if (hp.recurrent(L.il)) { s.S.push_back(buf(sb)); s.conv.push_back(buf(cb)); }
@@ -1175,7 +1180,7 @@ __kernel void rd_strip(__global const uint* p, __global uint* out, int per_item)
       swa_lo_ = std::max(swa_lo_, std::max(0, s.pos - hp.n_swa) / 16 * 16);
       last_drafts_.clear();
     }
-    const size_t sb = (size_t)hp.ssm_nv * hp.ssm_d_state * hp.ssm_d_state * 4, cb = conv_bytes();
+    const size_t sb = state_bytes(), cb = conv_bytes();
     size_t k = 0;
     for (auto& L : layers_)
       if (hp.recurrent(L.il)) {
@@ -1347,7 +1352,7 @@ __kernel void rd_strip(__global const uint* p, __global uint* out, int per_item)
     // (Qwen3 dense, Qwen3-ASR: two passes too. 72-token prompt against f32: one pass KL 0.0064 prompt / 0.0093 decode,
     //  two passes < 0.00001; 2048-token prompt 1376 -> 901 tok/s, generation 24.5 -> 22.2 tok/s. ARC_Q3_Q2=0: one pass)
     const bool q3_one = getenv("ARC_Q3_Q2") && atoi(getenv("ARC_Q3_Q2")) == 0;
-    q2mm_ = (q2_ && !g4_one) || (hp.hc && getenv("ARC_FN_Q2") && atoi(getenv("ARC_FN_Q2")) > 0) || (hp.qwen3 && !q3_one);
+    q2mm_ = (q2_ && !g4_one) || (hp.hc && getenv("ARC_FN_Q2") && atoi(getenv("ARC_FN_Q2")) > 0) || (hp.qwen3 && !q3_one && !(hp.lfm && getenv("ARC_LFM_Q2") && atoi(getenv("ARC_LFM_Q2")) == 0));
     g4_att8_ = q2_ && hp.gemma && hp.n_ple > 0 && !(getenv("ARC_G4_ATT8") && atoi(getenv("ARC_G4_ATT8")) == 0);
     if (!q2mm_) return;
     const size_t M = max_chunk;
@@ -1421,9 +1426,9 @@ __kernel void rd_strip(__global const uint* p, __global uint* out, int per_item)
   // [0, F) of up at C + F, each row computed by the kernel, grows and register file of its own launch, bit for bit;
   // one launch of 2F rows instead of two of F (a B60's 27B: 4,096 FFN launches of ~135 us per 32 steps). Off by
   // default until measured: ARC_GEMV_GU=1. false: not taken (two launches as before)
-  bool gemv_gu(const GpuWeight& g, const GpuWeight& u, int Mp, cl_mem C) {
+  bool gemv_gu(const GpuWeight& g, const GpuWeight& u, int Mp, cl_mem C, bool force = false) {
     static const bool on = getenv("ARC_GEMV_GU") && atoi(getenv("ARC_GEMV_GU")) != 0;
-    if (!on || cur_T_ != 1 || q2mm_ || !g.raw || !u.raw || g.type != u.type || g.N != u.N || g.K != u.K ||
+    if ((!on && !force) || cur_T_ != 1 || q2mm_ || !g.raw || !u.raw || g.type != u.type || g.N != u.N || g.K != u.K ||
         &g == &lm_head_ || &u == &lm_head_)
       return false;
     if (g.iq3t != u.iq3t) return false;  // (one kernel for both: one layout, ARC_IQ3S_TILE)
@@ -1684,6 +1689,15 @@ __kernel void rd_strip(__global const uint* p, __global uint* out, int per_item)
       if (&L == &layers_.front()) ink_forward(T, Mp);
       return;
     }
+    if (hp.lfm) {  // (zero/engine_lfm.h)
+      if (hp.recurrent(L.il)) layer_lfm_conv(L, T, Mp);
+      else layer_attn(L, T, Mp);
+      if (dbg_rows) dbg_row(T - 1);
+      if (L.il < hp.lfm_dense) layer_ffn(L, T, Mp);
+      else layer_lfm_moe(L, T, Mp);
+      if (dbg_rows) dbg_row(T - 1);
+      return;
+    }
     if (hp.hc) {  // Flash Next: each block reads the mixed streams and adds its output to every stream
       if (L.il == hp.ple_layer) ple_block(L, T, Mp);
       hc_mix(L.hc_norm[0], L.hc_down[0], L.hc_up[0], T, Mp, act32_for(false), 0);
@@ -1729,6 +1743,7 @@ __kernel void rd_strip(__global const uint* p, __global uint* out, int per_item)
   }
 
 #include "engine_gemma.h"  // (Gemma 4 layers)
+#include "engine_lfm.h"  // (LFM2 MoE)
 
   // x_ = (x_ + rmsnorm(big_) * w) * s over the first T rows, then the next GEMV input from the new x_ (rmsnorm * w2,
   // or plain with norm2 = false) into aq_ / asc_ / absum_

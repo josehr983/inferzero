@@ -21,6 +21,7 @@
 #include "../src/tokenizer.h"
 #include "../src/chat.h"
 #include "../src/chat_gemma4.h"
+#include "../src/chat_lfm.h"
 #include "../src/chat_jinja.h"
 #include "../src/image.h"
 #include "../src/audio.h"
@@ -283,6 +284,7 @@ class Server {
     ocr_ = ocr_model(g, model_id_);  // (tools/server_ocr.h)
     if (ocr_) zlog::eprintf("OCR mode: requests with an image get this model's own task prompts (tools/server_ocr.h)\n");
     gemma_ = e.hp.gemma;
+    lfm_ = e.hp.lfm;
     rings_ = e.hp.swa_rings;
     if (gemma_) {
       // Gemma 4: the GGUF template is rendered with minja; turns are <|turn>role ... <turn|>
@@ -295,6 +297,13 @@ class Server {
       think_close_ = "<channel|>";
     } else {
       im_start_ = tok_.token("<|im_start|>");
+      if (lfm_) {  // (LFM2: the GGUF template with minja, without its generation markers; its sampling defaults)
+        std::string tpl = g.get_str("tokenizer.chat_template");
+        for (const char* tag : {"{%- generation -%}", "{%- endgeneration -%}", "{% generation %}", "{% endgeneration %}"})
+          for (size_t at; (at = tpl.find(tag)) != std::string::npos;) tpl.erase(at, strlen(tag));
+        jinja_ = std::make_unique<JinjaChat>(tpl, "<|startoftext|>", "<|im_end|>");
+        defaults_.repeat_penalty = (float)g.get_float("general.sampling.penalty_repeat", 1.0);
+      }
       for (const char* s : {"<|im_end|>", "<|endoftext|>"}) {
         const int tid = tok_.token(s);
         if (tid >= 0) stop_ids_.push_back(tid);
@@ -488,7 +497,7 @@ class Server {
   Engine& eng_;
   Tokenizer& tok_;
   std::string model_id_, webui_;
-  bool q38_ = false, gemma_ = false;
+  bool q38_ = false, gemma_ = false, lfm_ = false;
   bool rings_ = false;  // (ring caches, no recurrent state: a prefix is reused by rewind(), not snapshots)
 
  public:

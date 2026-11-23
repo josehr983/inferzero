@@ -230,7 +230,7 @@
             throw std::runtime_error("PLE hash columns past the table");
       }
     } else {
-      out_norm_ = load_f32("output_norm.weight");
+      out_norm_ = load_f32(hp.lfm ? "token_embd_norm.weight" : "output_norm.weight");
     }
     // lm_head is only ever a GEMV on the last token: keep just the raw rows.
     const GgufTensor& lt = tp_head(f_.find("output.weight") ? f_.get("output.weight") : *tok_embd_);

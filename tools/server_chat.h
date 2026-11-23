@@ -101,7 +101,7 @@
       const char* e = getenv("ARC_TOOL_CONSTRAINT");
       if (tools.is_array() && tools.size() && !no_calls && !(e && std::string(e) == "0")) {
         if (gemma_) tcc = std::make_unique<tcon::GemmaCall>(tools);
-        else tcc = std::make_unique<tcon::QwenCall>(tools);
+        else if (!lfm_) tcc = std::make_unique<tcon::QwenCall>(tools);
         if (tcc && tcc->empty()) tcc.reset();
       }
     }
@@ -128,7 +128,7 @@
     // Qwen's reasoning: presence_penalty 1.5 unless the request sets one (Qwen's recommendation for thinking, against
     // endless reasoning: the 35B once circled "Let's run." for 7,000 tokens without closing </think>); the answer and
     // its tool calls keep the request's value (0: code is not penalized for reusing its tokens)
-    const float think_pp = !gemma_ && !body["presence_penalty"].is_number() ? 1.5f : sp.presence_penalty;
+    const float think_pp = !gemma_ && !lfm_ && !body["presence_penalty"].is_number() ? 1.5f : sp.presence_penalty;
     if (body["frequency_penalty"].is_number()) sp.frequency_penalty = (float)body["frequency_penalty"].as_number();
     if (body["repeat_penalty"].is_number()) sp.repeat_penalty = (float)body["repeat_penalty"].as_number();
     if (body["repeat_last_n"].is_number()) sp.repeat_last_n = (int)body["repeat_last_n"].as_clamped(64, -1, INT_MAX);
@@ -176,6 +176,8 @@
     } catch (const std::exception& e) {
       return rs.send(400, "application/json", err(e.what()).dump());
     }
+    // (LFM2: its template always opens <think>; with thinking off the block is closed at once)
+    if (lfm_ && !raw_prompt && !co.enable_thinking) prompt += "</think>";
     // ARC_DUMP_PROMPT=file: every rendered prompt appended to the file (to see where a turn's prompt differs from the
     // last one, which decides how much of the cache is reused)
     if (const char* df = getenv("ARC_DUMP_PROMPT")) {
@@ -546,6 +548,7 @@
       const bool in_thought = prompt.size() >= opened.size() && prompt.compare(prompt.size() - opened.size(), opened.size(), opened) == 0;
       parser_p = std::make_unique<gemma4::OutputParser>(in_thought, tools);
     }
+    else if (lfm_) parser_p = std::make_unique<chat::LfmOutputParser>(co.enable_thinking, tools);
     else parser_p = std::make_unique<chat::OutputParser>(co.enable_thinking, tools);
     chat::OutputParserBase& parser = *parser_p;
     std::vector<int> gen;

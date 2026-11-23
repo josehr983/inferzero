@@ -136,6 +136,12 @@
            vq = nullptr, vsc = nullptr;
     // FFN
     GpuWeight gate, up, down;
+    // LFM2 (zero/engine_lfm.h): the short convolution's projections, each expert's gate / up / down as views of the
+    // layer's stacked rows, the router (f32) and the selection bias
+    GpuWeight lf_in, lf_out;
+    std::vector<GpuWeight> lf_x[3];
+    cl_mem lf_router = nullptr;
+    std::vector<float> lf_bias;
     // MoE FFN: router (+ shared-expert gate row), shared expert, routed experts (gate/up/down codes and scales)
     GpuWeight router, gate_sh, up_sh, down_sh;
     // single tokens: router rows (padded to rgu_rows()) + shared-expert gate + up rows, one Q8_0 GEMV (they read
@@ -185,6 +191,13 @@
     std::vector<int> dsh;                  // (and the Engram token history)
   };
   std::vector<Snap> snaps_;
+  // LFM2 (zero/engine_lfm.h)
+  cl_mem lf_probs_ = nullptr, lf_idx_ = nullptr, lf_wts_ = nullptr, lf_acc_ = nullptr;
+  std::vector<float> lf_probs_host_, lf_ww_;
+  std::vector<int> lf_id_;
+  std::vector<std::vector<int>> lf_rows_;
+  std::vector<std::vector<float>> lf_w_;
+  std::string lfm_src_;
   static constexpr int32_t kStateMagic = 0x53435241;  // "ARCS"
   struct HostSnap {
     int pos = -1;
@@ -250,7 +263,7 @@
     throw Cancelled();
   }
   int swa_lo_ = 0;  // sliding-window layers hold no K/V below this position (a loaded conversation, trimmed)
-  size_t state_bytes() const { return (size_t)hp.ssm_nv * hp.ssm_d_state * hp.ssm_d_state * 4; }
+  size_t state_bytes() const { return hp.lfm ? 64 : (size_t)hp.ssm_nv * hp.ssm_d_state * hp.ssm_d_state * 4; }
   // (DeltaNet conv history of 3 rows; Flash Next: every recurrent layer's state also has room for the PLE block's,
   // used at its layer: ple_hist() rows of the conv input and the last two token ids, so snapshots, saved
   // conversations and cancellation carry it like the other recurrent state)

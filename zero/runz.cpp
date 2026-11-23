@@ -704,7 +704,8 @@ static int run_main(int argc, char** argv) {
   auto bos_first = [&]() {
     GgufFile g(model);
     Vocab v(g);
-    if (g.get_int("tokenizer.ggml.add_bos_token", 0) != 0 && v.bos >= 0 && (toks.empty() || toks[0] != v.bos))
+    // (LFM2: the GGUF has no add_bos_token, llama.cpp adds its BOS in code)
+    if ((g.get_int("tokenizer.ggml.add_bos_token", 0) != 0 || g.get_str("tokenizer.ggml.pre") == "lfm2") && v.bos >= 0 && (toks.empty() || toks[0] != v.bos))
       toks.insert(toks.begin(), v.bos);
   };
   if (!text_prompt.empty()) {  // the vocabulary is read from the GGUF before the engine loads
@@ -1303,7 +1304,7 @@ static int run_main(int argc, char** argv) {
     std::stringstream ss;
     ss << fin.rdbuf();
     const std::vector<int> all = vocab.encode(ss.str(), false);
-    const bool add_bos = eng.gguf().get_int("tokenizer.ggml.add_bos_token", 0) != 0;
+    const bool add_bos = eng.gguf().get_int("tokenizer.ggml.add_bos_token", 0) != 0 || eng.gguf().get_str("tokenizer.ggml.pre") == "lfm2";
     int nchunks = (int)(all.size() / ppl_ctx);
     if (ppl_chunks > 0) nchunks = std::min(nchunks, ppl_chunks);
     if (nchunks <= 0)  // (a text shorter than one chunk: nothing to score, the result would be nan)

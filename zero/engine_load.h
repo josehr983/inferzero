@@ -751,7 +751,9 @@
         L.attn_norm = load_vec(p + "attn_norm.weight", hp.n_embd);
         L.post_norm = load_vec(p + (hp.qwen3 ? "ffn_norm.weight" : "post_attention_norm.weight"), hp.n_embd);
       }
-      if (hp.recurrent(il)) {
+      if (hp.lfm && hp.recurrent(il)) {
+        load_lfm_conv(L, p);
+      } else if (hp.recurrent(il)) {
         load_gdn_in(L, p);
         L.ssm_out = load_w(p + "ssm_out.weight");
         expect(L.ssm_out, hp.n_embd, -1, p + "ssm_out.weight");
@@ -773,7 +775,9 @@
       } else {
         load_attn(L, p);
       }
-      if (hp.moe) {
+      if (hp.lfm && il >= hp.lfm_dense) {
+        load_lfm_moe(L, p);
+      } else if (hp.moe) {
         load_moe(L, p);
       } else if ((hp.qwen3 || (float_type(f_.get(p + "ffn_gate.weight").type) && !getenv("ARC_NO_GU_FLT"))) &&
                  f_.get(p + "ffn_gate.weight").type == f_.get(p + "ffn_up.weight").type) {
@@ -787,7 +791,7 @@
         expect(L.gate, hp.n_ff, hp.n_embd, p + "ffn_gate.weight");
         expect(L.up, hp.n_ff, hp.n_embd, p + "ffn_up.weight");
       }
-      if (!hp.moe) expect(L.down, hp.n_embd, hp.n_ff, p + "ffn_down.weight");
+      if (!hp.moe && !(hp.lfm && il >= hp.lfm_dense)) expect(L.down, hp.n_embd, hp.n_ff, p + "ffn_down.weight");
       clFinish(cl_.queue);
     }
     // MTP (nextn) block: eh_proj + one gated-attention layer + FFN, sharing the output head

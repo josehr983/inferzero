@@ -441,7 +441,7 @@ static std::vector<ModelInfo> scan_models() {
       drafter = drafter || f.rfind("mtp-", 0) == 0;
     }
     m.supported = m.arch == "qwen35" || m.arch == "qwen35moe" || m.arch == "gemma4";  // (MoE: GSQ or standard experts)
-    m.supported = m.supported || m.arch == "qwen4exp";  // (Qwen3.8 Flash Next: inferzero only, experts streamed)
+    m.supported = m.supported || m.arch == "qwen4exp" || m.arch == "lfm2moe";  // (Qwen3.8 Flash Next: inferzero only, experts streamed)
     (void)gsq;
     m.vision = mmproj;  // (Gemma 4 12B: gemma4uv; E2B / E4B: gemma4v)
     m.audio = audio;

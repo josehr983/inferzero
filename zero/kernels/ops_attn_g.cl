@@ -23,6 +23,11 @@ __kernel void rope_table(__global float2* rt, int hd, int pos0, float theta_base
     (dst)[8 * c_] = t_.s0; (dst)[8 * c_ + 1] = t_.s1; (dst)[8 * c_ + 2] = t_.s2;         \
     (dst)[8 * c_ + 3] = t_.s3; (dst)[8 * c_ + 4] = t_.s4; (dst)[8 * c_ + 5] = t_.s5;     \
     (dst)[8 * c_ + 6] = t_.s6; (dst)[8 * c_ + 7] = t_.s7;                               \
+  }                                                                                       \
+  if ((n) % 8 == 4) { /* (head 64, LFM2: runs of 4) */                  \
+    const float4 t4_ = vload4(0, (p) + (n) / 8 * 8);                                      \
+    (dst)[(n) / 8 * 8] = t4_.s0; (dst)[(n) / 8 * 8 + 1] = t4_.s1;                         \
+    (dst)[(n) / 8 * 8 + 2] = t4_.s2; (dst)[(n) / 8 * 8 + 3] = t4_.s3;                     \
   }
 // Attention inputs for one (token, head) per sub-group: RMS norm per head (weighted for q and k), NEOX RoPE over all
 // HD dims (theta = pos * base^(-2i/HD) / ff[i] with optional frequency factors), V = RMS norm without weight of the
@@ -194,12 +199,18 @@ __kernel void attn_prep_g(__global const float* qkv, int ldq, int nh, int nkv, i
 #define FVT float16
 #define FVLOAD_H(p) VLD16(p)
 #define FVSTORE vstore16
-#else  // (head 128: one chunk, 8 dims per lane)
+#elif HD >= 128  // (head 128: one chunk, 8 dims per lane)
 #define FDC 1
 #define FVW 8
 #define FVT float8
 #define FVLOAD_H(p) VLD8(p)
 #define FVSTORE vstore8
+#else  // (head 64, LFM2: one chunk, 4 dims per lane)
+#define FDC 1
+#define FVW 4
+#define FVT float4
+#define FVLOAD_H(p) VLD4(p)
+#define FVSTORE vstore4
 #endif
 // -DFA_SPLIT (generation / verification, <= 8 rows): flash-decoding. A row's key blocks are cut into splits of at
 // least FA_BPS blocks, at most FA_SMAX of them, a function of that row's own range only (so a row gives the same

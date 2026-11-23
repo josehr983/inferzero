@@ -41,6 +41,7 @@
     if (a == "qwen3" || a == "qwen3vl") return load_hparams_qwen3();
     if (a == "deepseek41") return load_hparams_ds41();
     if (a == "inkling2" || a == "inkling2_loop") return load_hparams_inkling();  // (zero/engine_inkling.h)
+    if (a == "lfm2moe") return load_hparams_lfm2();
     if (a != "qwen35" && a != "qwen35moe" && a != "qwen4exp") throw std::runtime_error("unsupported architecture: " + a);
     hp.moe = a == "qwen35moe" || a == "qwen4exp";
     hp.hc = a == "qwen4exp";
@@ -384,6 +385,10 @@
 
   // Decides whether decoded W8 weights stay resident.
   void plan_weights() {
+    if (hp.lfm) {  // (the experts are 3-D tensors the sum below skips: always just in time)
+      w8_resident = false;
+      return;
+    }
     if (hp.moe) {  // Q8_0 matrices (repacked at load) and 2-bit experts: nothing is decoded just in time
       w8_resident = true;
       // streamed experts that cannot all be cached (more than the GPU memory share; Qwen3.8 Flash Next: 52 GB): the
@@ -471,7 +476,11 @@
       if (ax.empty()) throw std::runtime_error("kernel file not found: " + opt.kernel_dir + "/attn_x.cl");
       attnx_src_ = ax + "\n" + ops_.for_kernel("attn_q8");
     }
-    const std::string& src = which == "gemm" ? gemm_src_ : which == "decode" ? dec_.for_kernel(name) : which == "moe" ? moe_src_
+    if (which == "lfm" && lfm_src_.empty()) {  // (LFM2: zero/kernels/lfm.cl)
+      lfm_src_ = read_file(opt.kernel_dir + "/lfm.cl");
+      if (lfm_src_.empty()) throw std::runtime_error("kernel file not found: " + opt.kernel_dir + "/lfm.cl");
+    }
+    const std::string& src = which == "lfm" ? lfm_src_ : which == "gemm" ? gemm_src_ : which == "decode" ? dec_.for_kernel(name) : which == "moe" ? moe_src_
                              : which == "asr" ? asr_src_ : which == "x16" ? x16_src_ : which == "h8" ? h8_src_ : which == "x8" ? x8_src_
                              : which == "gdnx" ? gdnx_src_ :which == "attnx" ? attnx_src_ : which == "attnfx" ? attnfx_src_ : which == "xw" ? xw_src_ : which == "xw8" ? xw8_src_
                              : ops_.for_kernel(name);

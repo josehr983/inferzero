@@ -329,7 +329,7 @@
       }
       // (attn_fa_gh: each key row read once for the q heads of its kv head; 2 sub-groups of 4 dims per lane, up to 4
       //  query rows per work-group, 2 key blocks per step, as layer_gemma_attn picks them for head 128)
-      const int fs = 2, gr = std::clamp(64 / (hpg * (hd / fs / 16)), 1, 4), kb = hpg * gr <= 8 ? 2 : 1;
+      const int fs = hd >= 128 ? 2 : 1, gr = std::clamp(64 / (hpg * (hd / fs / 16)), 1, 4), kb = hpg * gr <= 8 ? 2 : 1;  // (head 64, LFM2: one sub-group)
       cl_kernel k = kernel("ops", "-cl-intel-256-GRF-per-thread -DFA_GH" + kdef + " -DHD=" + std::to_string(hd) + " -DHPG=" +
                                       std::to_string(hpg) + " -DFS=" + std::to_string(fs) + " -DGR=" + std::to_string(gr) +
                                       " -DKB=" + std::to_string(kb), "attn_fa_gh");
