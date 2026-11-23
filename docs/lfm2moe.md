@@ -16,7 +16,8 @@ the same file (`llama-bench -ngl 99`).
 | KL against f32, prompt chunk (300 positions) | - | 0.0018 (top token 296 / 300) | 0.0167 (277 / 300) |
 | KL against f32, `--kl-decode` | - | 0.0040 (295 / 300) | 0.0173 (276 / 300) |
 
-One pass is over the 0.015 line, so it is the opt-in. With one pass, through the server: an 18,945-token prompt at
+**One pass is below the project's accuracy bar** (KL over 0.015, the top token right at ~92 % of the positions):
+it is an opt-in for measurements, not a mode to answer with. With one pass, through the server: an 18,945-token prompt at
 ~1,330 tok/s, generation after it 65 tok/s; 8,192 tokens at ~1,900 tok/s.
 
 - The f32 reference is a numpy script that follows llama.cpp's graph and gives its top tokens (`tools/ref_forward`
@@ -79,7 +80,10 @@ Outside `engine_lfm.h`:
 - `engine_setup.h` `plan_weights`: the sum skips 3-D tensors, so the experts were not counted and the weights were
   planned resident; always just in time for this model.
 - `src/tokenizer.h`: pre-tokenizer `lfm2` (llama.cpp's LLAMA3 rule: numbers in runs of up to 3 digits,
-  `ignore_merges`). Same ids as `llama-tokenize` on a 16,547-token file.
+  `ignore_merges`, and `\p{L}+` where Qwen3.5's split has `[\p{L}\p{M}]+`: a combining mark ends a letter run).
+  Same ids as `llama-tokenize` on a 16,547-token English file and on 712 tokens of Devanagari, Thai, Bengali, Tamil,
+  pointed Hebrew and Arabic, jamo, emoji sequences and NFD accents (181 marks); with marks counted as letters 4
+  places of that text differed.
 - `runz.cpp`: BOS first for `lfm2` (the GGUF has no `add_bos_token`; llama.cpp adds it in code).
 
 ## Chat format
@@ -89,7 +93,9 @@ The reply is `<think>reasoning</think>answer`; the template always opens `<think
 
 Tool calls are Python calls, `<|tool_call_start|>[name(arg='text', n=3, opts={"a": 1})]<|tool_call_end|>`:
 `chat::parse_lfm_tool_calls` turns them into OpenAI `tool_calls`. No grammar constraint for them yet. A streamed
-call is sent whole once its block closes.
+call is sent whole once its block closes. `tool_choice` "required" or a function starts the answer with
+`<|tool_call_start|>[` (and the name); "none" never draws that token. A malformed call ends the parse with what was
+read so far (`tests/test_chat_lfm.cpp`).
 
 ## Use
 
@@ -101,7 +107,7 @@ bin\serverz.exe -m LFM2.5-24B-A2B-QAD-Q4_0.gguf --ctx 81920
 On a 16 GB card that also drives a monitor, `--ctx 81920 --chunk 1024` fits where chunks of 2,048 paged
 (generation 80 -> 51 tok/s).
 
-Environment: `ARC_LFM_Q2=0` one int8 pass (faster, KL 0.017); with it, `ARC_LFM_FAST1=0` the general expert path
+Environment: `ARC_LFM_Q2=0` one int8 pass (faster, below the accuracy bar: KL 0.017); with it, `ARC_LFM_FAST1=0` the general expert path
 for single tokens and `ARC_LFM_GU=0` `gate` and `up` as two launches.
 
 ## Limits
@@ -109,7 +115,8 @@ for single tokens and `ARC_LFM_GU=0` `gate` and `up` as two launches.
 - `expert_gating_func` 2 (sigmoid), heads of 64, 3 convolution taps; the one-token path combines exactly 4 experts.
   LFM2-8B-A1B has the same architecture and is untested.
 - Text only: no image or audio input, no drafter. Dense `lfm2` and `lfm3` models are not covered.
-- One slot: `--slots N` does not know the new buffers.
+- One conversation, one GPU, no drafter: `--slots N`, `--gpus N`, `--mtp`, `--dflash` and `--dspark` are refused at
+  load.
 - A prompt that changes before the last snapshot is read again from it (recurrent state), as with Qwen3.5.
 - The prompt slows with depth: at 4K the attention is 18 % of the GPU time and the expert decode 16 %; the router
   kernel is a plain one (12 %).

@@ -489,14 +489,18 @@ class Tokenizer {
   // Qwen3.5 pre-tokenizer, equivalent to the regex
   //   (?:'[sS]|'[tT]|'[rR][eE]|'[vV][eE]|'[mM]|'[lL][lL]|'[dD])|[^\r\n\p{L}\p{N}]?[\p{L}\p{M}]+|\p{N}|
   //    ?[^\s\p{L}\p{M}\p{N}]+[\r\n]*|\s*[\r\n]+|\s+(?!\S)|\s+
-  static void pretokenize(const std::vector<uint32_t>& c, std::vector<std::pair<size_t, size_t>>& words, int nd = 1) {
+  // nd / marks: LLAMA3 (LFM2) is the same regex with \p{N}{1,3} and without \p{M} in its two classes: nd = 3,
+  // marks = false (a combining mark then ends a letter run and belongs to the punctuation class)
+  static void pretokenize(const std::vector<uint32_t>& c, std::vector<std::pair<size_t, size_t>>& words, int nd = 1,
+                          bool marks = true) {
     const size_t n = c.size();
     auto F = [&](size_t i) -> uint16_t { return i < n ? uni::flags(c[i]) : 0; };
-    auto LM = [&](size_t i) { return i < n && (F(i) & (uni::LETTER | uni::MARK)); };
+    const uint16_t lmask = marks ? (uni::LETTER | uni::MARK) : uni::LETTER;
+    auto LM = [&](size_t i) { return i < n && (F(i) & lmask); };
     auto N_ = [&](size_t i) { return i < n && (F(i) & uni::NUMBER); };
     auto WS = [&](size_t i) { return i < n && uni::is_ws(c[i]); };
     auto NL = [&](size_t i) { return i < n && (c[i] == '\r' || c[i] == '\n'); };
-    auto PUNCT = [&](size_t i) { return i < n && !WS(i) && !(F(i) & (uni::LETTER | uni::MARK | uni::NUMBER)); };
+    auto PUNCT = [&](size_t i) { return i < n && !WS(i) && !(F(i) & (lmask | uni::NUMBER)); };
     auto lower = [&](size_t i) -> uint32_t { return i < n && c[i] < 128 ? (uint32_t)tolower((int)c[i]) : (i < n ? c[i] : 0); };
     size_t i = 0;
     while (i < n) {
@@ -665,7 +669,7 @@ class Tokenizer {
     if (gpt2_) pretokenize_gpt2(cps, words);
     else if (ds3_) pretokenize_ds3(cps, words);
     else if (gpt4o_) pretokenize_gpt4o(cps, words);
-    else pretokenize(cps, words, num3_ ? 3 : 1);
+    else pretokenize(cps, words, num3_ ? 3 : 1, !num3_);
     for (auto& [a, b] : words) bpe_word(text.substr(offs[a], offs[b] - offs[a]), out);
   }
 };

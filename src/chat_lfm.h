@@ -79,6 +79,9 @@ struct LfmPy {
     while (e < s.size() && s[e] != ',' && s[e] != ')' && s[e] != ']' && s[e] != '}' && s[e] != '\n') ++e;
     std::string w = s.substr(i, e - i);
     while (!w.empty() && w.back() == ' ') w.pop_back();
+    // (no characters before the separator: malformed, e.g. "f(a=1]". Without this the caller's loop saw a value
+    //  and made no progress: it never ended)
+    if (e == i) { ok = false; return Json(); }
     i = e;
     if (w == "True" || w == "true") return Json(true);
     if (w == "False" || w == "false") return Json(false);

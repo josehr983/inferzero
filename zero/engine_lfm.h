@@ -56,6 +56,10 @@
         hp.lfm_dense < 0 || hp.lfm_dense > hp.n_layer)
       throw std::runtime_error("unsupported LFM2 MoE dimensions");
     if (!opt.attn_int8) throw std::runtime_error("f32 attention (--attn-f32) does not support LFM2 models");
+    // (slots: the convolution state and the expert buffers are one conversation's; a split model: only the heads
+    //  are split; no drafter knows the convolution layers)
+    if (opt.slots > 1 || opt.mtp || !opt.dflash.empty() || !opt.dspark.empty() || opt.tp_size > 1)
+      throw std::runtime_error("LFM2: slots, drafters and several GPUs are not supported yet");
   }
 
   // a matrix with a staging role of the caller's choice (load_w takes it from the tensor's name)
@@ -156,7 +160,7 @@
     float sel[1024];
     for (int e = 0; e < NE; ++e) { sel[e] = p[e] + L.lf_bias[e]; order[e] = e; }
     std::partial_sort(order, order + U, order + NE, [&](int a, int b) { return sel[a] > sel[b] || (sel[a] == sel[b] && a < b); });
-    float sum = 0.0f, w[8] = {};
+    float sum = 0.0f, w[4] = {};  // (U == 4: layer_lfm_moe takes this path for 4 experts a token only)
     for (int i = 0; i < U; ++i) sum += p[order[i]];
     const float sc = (hp.lfm_wscale != 0.0f && hp.lfm_wscale != 1.0f ? hp.lfm_wscale : 1.0f) / sum;
     for (int i = 0; i < U; ++i) w[i] = p[order[i]] * sc;
@@ -184,7 +188,6 @@
         matmul("moe_down", L.lf_x[2][order[i]], Mp, from(d, (size_t)i * E * 4), E, 0, 0, 1);
       }
     }
-    if (U != 4) throw std::runtime_error("lfm: the one-token path combines 4 experts");
     cl_kernel k = lfk("lfm_combine4");
     int EE = E;
     set_args(k, 0, x_, d, EE, w[0], w[1], w[2], w[3]);
@@ -210,7 +213,7 @@
       size_t gws[2] = {(size_t)NE * 16, (size_t)T}, lws[2] = {16, 1};
       run("moe_router", k, 2, gws, lws);
     }
-    if (T == 1 && batch_.empty() && !q2mm_ && lfm_fast1()) return lfm_moe_one(L, Mp);
+    if (T == 1 && U == 4 && batch_.empty() && !q2mm_ && lfm_fast1()) return lfm_moe_one(L, Mp);
     float* pr = lf_probs_host_.data();
     CL_CHECK(clEnqueueReadBuffer(cl_.queue, lf_probs_, CL_TRUE, 0, (size_t)T * NE * 4, pr, 0, nullptr, nullptr));
     // each expert's token rows and weights

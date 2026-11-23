@@ -59,7 +59,7 @@
     const bool no_calls = body["tool_choice"].str() == "none";
     int no_call_tok = -1;
     if (no_calls && tools.is_array() && tools.size()) {
-      const std::vector<int> o = tok_.encode(gemma_ ? "<|tool_call>" : "<tool_call>", true);
+      const std::vector<int> o = tok_.encode(gemma_ ? "<|tool_call>" : lfm_ ? "<|tool_call_start|>" : "<tool_call>", true);
       if (o.size() == 1) no_call_tok = o[0];
       else tools = Json();  // (not one token: the tools left out, as before)
     } else if (no_calls) {
@@ -82,6 +82,7 @@
                                               !tc["function"]["name"].str(tc["name"].str()).empty())) {
         force_tool_on = true;
         force_tool = gemma_ ? "<|tool_call>call:" + (fname.empty() ? std::string() : fname + "{")
+                     : lfm_ ? "<|tool_call_start|>[" + (fname.empty() ? std::string() : fname + "(")
                             : "<tool_call>\n<function=" + (fname.empty() ? std::string() : fname + ">\n");
       }
     }
